@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+    <meta charset="UTF-8">
+    <title>Painel da Rádio</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-1BmE4kWBq78iYhFldvKuhfTAU6auU8tT94WrHftjDbrCEXSU1oBoqyl2QvZ6jIW3" crossorigin="anonymous">
+    <style>
+        body { background-color: #f8f9fa; }
+        .card { margin-bottom: 1.5rem; }
+        .list-group-item { display: flex; justify-content: space-between; align-items: center; }
+        .flash-messages .alert { margin-bottom: 1rem; }
+        .handle { cursor: grab; margin-right: 10px; user-select: none; }
+        .list-group-item.sortable-ghost { opacity: 0.4; background: #c8ebfb; }
+        .list-group-item.sortable-dragging { cursor: grabbing; }
+        .list-group-item.playing {
+            background-color: #d1e7dd !important; /* Verde claro do Bootstrap */
+            font-weight: bold;
+            border-left: 5px solid #198754; /* Verde escuro */
+        }
+    </style>
+</head>
+<body>
+    <div class="container mt-4 mb-5">
+        <div class="d-flex justify-content-between align-items-center mb-4">
+            <h1>Painel de Administração da Rádio</h1>
+            <a href="/" class="btn btn-outline-secondary" target="_blank">Ver Página do Ouvinte</a>
+        </div>
+        
+        {% with messages = get_flashed_messages(with_categories=true) %}
+          {% if messages %}<div class="flash-messages">{% for category, message in messages %}<div class="alert alert-{{ category }} alert-dismissible fade show" role="alert">{{ message }}<button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button></div>{% endfor %}</div>{% endif %}
+        {% endwith %}
+
+        <div class="card bg-dark text-white">
+            <div class="card-header fw-bold">Player de Monitoramento</div>
+            <div class="card-body"><div id="now-playing-monitor" class="my-2 fs-5 fw-bold text-info">Conectando...</div><audio id="player" controls class="w-100"></audio><div id="status-monitor" class="text-muted small mt-2">Iniciando conexão...</div></div>
+        </div>
+
+        <div class="card">
+            <div class="card-header fw-bold">Status da Rádio</div>
+            <div class="card-body">
+                <p><strong>Status:</strong> <span id="status-is-playing">{% if status.is_playing %}<span class="badge bg-success fs-6">No Ar</span>{% else %}<span class="badge bg-danger fs-6">Parada</span>{% endif %}</span></p>
+                <p><strong>Ouvintes Online:</strong> <span id="status-listeners" class="badge bg-primary fs-6">{{ status.listeners }}</span></p>
+                <p><strong>Tocando Agora:</strong> <span id="status-current-song">{{ status.current_item.filename | prettify if status.current_item else 'N/A' }}</span></p>
+                <p><strong>Próxima Faixa:</strong> <span id="status-next-song">Carregando...</span></p>
+                <p><strong>Modo de Reprodução:</strong> <span id="status-playback-mode">{{ status.playback_mode.capitalize() }}</span></p>
+            </div>
+        </div>
+
+        <div class="row">
+            <div class="col-lg-4">
+                <div class="card"><div class="card-header fw-bold">Controle da Transmissão</div><div class="card-body" id="playback-controls">{% if status.is_playing %}<p class="text-muted small">Pare a transmissão para poder remover a faixa que está tocando.</p><form action="/admin/playback" method="POST"><input type="hidden" name="action" value="stop"><button type="submit" class="btn btn-danger w-100">Parar Transmissão</button></form>{% else %}<p class="text-muted small">A transmissão está pausada.</p><form action="/admin/playback" method="POST"><input type="hidden" name="action" value="start"><button type="submit" class="btn btn-success w-100">Iniciar Transmissão</button></form>{% endif %}</div></div>
+                <div class="card">
+                    <div class="card-header fw-bold">Configurações Gerais</div>
+                    <div class="card-body">
+                        <form action="/admin/settings/general" method="POST" class="mb-4"><div class="mb-3"><label for="radio_name" class="form-label">Nome da Rádio</label><input type="text" id="radio_name" name="radio_name" class="form-control" value="{{ status.radio_name }}" required></div><button type="submit" class="btn btn-primary">Salvar Nome</button></form><hr>
+                        <form action="/admin/settings/playback" method="POST"><div class="mb-3"><label class="form-label">Modo de Reprodução</label><select name="playback_mode" class="form-select"><option value="shuffle" {% if status.playback_mode == 'shuffle' %}selected{% endif %}>Aleatório</option><option value="sequential" {% if status.playback_mode == 'sequential' %}selected{% endif %}>Sequencial</option></select></div><div class="mb-3"><label class="form-label">Tocar vinheta a cada:</label><div class="input-group"><input type="number" name="jingle_interval" class="form-control" value="{{ status.jingle_interval }}" min="0"><span class="input-group-text">músicas</span></div><small class="form-text">(0)</small></div><div class="mb-3"><label class="form-label">Tocar anúncio a cada:</label><div class="input-group"><input type="number" name="ad_interval" class="form-control" value="{{ status.ad_interval }}" min="0"><span class="input-group-text">músicas</span></div><small class="form-text">(0)</small></div><button type="submit" class="btn btn-primary">Salvar Configurações de Reprodução</button></form>
+                    </div>
+                </div>
+            </div>
+            <div class="col-lg-8">
+                <div class="card"><div class="card-header fw-bold">Gerenciar Músicas ({{ songs|length }})</div><div class="card-body"><form action="/admin/upload" method="POST" enctype="multipart/form-data" class="mb-3"><input type="hidden" name="type" value="song"><div class="input-group"><input type="file" name="file" class="form-control" accept=".mp3" required><button type="submit" class="btn btn-primary">Enviar Música</button></div></form><ul id="song-list" class="list-group list-group-flush" data-type="songs">{% for song in songs %}<li class="list-group-item" data-filename="{{ song }}" data-type="song"><span><span class="handle">☰</span><span class="text-break">{{ song | prettify }}</span></span><form action="/admin/delete" method="POST" onsubmit="return confirm('Tem certeza que deseja excluir \'{{ song | prettify }}\'?');"><input type="hidden" name="type" value="song"><input type="hidden" name="filename" value="{{ song }}"><button type="submit" class="btn btn-danger btn-sm">Excluir</button></form></li>{% else %}<li class="list-group-item">Nenhuma música encontrada.</li>{% endfor %}</ul></div></div>
+                <div class="card"><div class="card-header fw-bold">Gerenciar Vinhetas ({{ jingles|length }})</div><div class="card-body"><form action="/admin/upload" method="POST" enctype="multipart/form-data" class="mb-3"><input type="hidden" name="type" value="jingle"><div class="input-group"><input type="file" name="file" class="form-control" accept=".mp3" required><button type="submit" class="btn btn-primary">Enviar Vinheta</button></div></form><ul id="jingle-list" class="list-group list-group-flush" data-type="jingles">{% for jingle in jingles %}<li class="list-group-item" data-filename="{{ jingle }}" data-type="jingle"><span><span class="handle">☰</span><span class="text-break">{{ jingle | prettify }}</span></span><form action="/admin/delete" method="POST" onsubmit="return confirm('Tem certeza que deseja excluir \'{{ jingle | prettify }}\'?');"><input type="hidden" name="type" value="jingle"><input type="hidden" name="filename" value="{{ jingle }}"><button type="submit" class="btn btn-danger btn-sm">Excluir</button></form></li>{% else %}<li class="list-group-item">Nenhuma vinheta encontrada.</li>{% endfor %}</ul></div></div>
+                <div class="card"><div class="card-header fw-bold">Gerenciar Anúncios ({{ ads|length }})</div><div class="card-body"><form action="/admin/upload" method="POST" enctype="multipart/form-data" class="mb-3"><input type="hidden" name="type" value="ad"><div class="input-group"><input type="file" name="file" class="form-control" accept=".mp3" required><button type="submit" class="btn btn-primary">Enviar Anúncio</button></div></form><ul id="ad-list" class="list-group list-group-flush" data-type="ads">{% for ad in ads %}<li class="list-group-item" data-filename="{{ ad }}" data-type="ad"><span><span class="handle">☰</span><span class="text-break">{{ ad | prettify }}</span></span><form action="/admin/delete" method="POST" onsubmit="return confirm('Tem certeza que deseja excluir \'{{ ad | prettify }}\'?');"><input type="hidden" name="type" value="ad"><input type="hidden" name="filename" value="{{ ad }}"><button type="submit" class="btn btn-danger btn-sm">Excluir</button></form></li>{% else %}<li class="list-group-item">Nenhum anúncio encontrado.</li>{% endfor %}</ul></div></div>
+            </div>
+        </div>
+    </div>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js" integrity="sha384-ka7Sk0Gln4gmtz2MlQnikT1wXgYsOg+OMhuP+IlRH9sENBO0LRn5q+8nbTov4+1p" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/sortablejs@latest/Sortable.min.js"></script>
+    <script>
+        document.addEventListener('DOMContentLoaded', function () {
+            const player = document.getElementById('player');
+            if (player) {
+                const nowPlayingElem = document.getElementById('now-playing-monitor');
+                const statusElem = document.getElementById('status-monitor');
+                if ('MediaSource' in window) {
+                    const mediaSource = new MediaSource(); player.src = URL.createObjectURL(mediaSource);
+                    mediaSource.addEventListener('sourceopen', () => {
+                        statusElem.textContent = 'Conectado. Iniciando stream...';
+                        const sourceBuffer = mediaSource.addSourceBuffer('audio/mpeg');
+                        fetch('/stream').then(response => {
+                            const reader = response.body.getReader();
+                            function push() { reader.read().then(({ done, value }) => { if (done) return; const append = () => { if (value) try { sourceBuffer.appendBuffer(value); } catch(e) { console.error(e); } }; if (sourceBuffer.updating) { sourceBuffer.addEventListener('updateend', append, { once: true }); } else { append(); } push(); }).catch(err => console.error(err)); }
+                            push();
+                        });
+                    });
+                } else { statusElem.textContent = "Seu navegador não suporta streaming contínuo."; player.src = '/stream'; }
+                function updateNowPlaying() { fetch('/now_playing').then(r => r.text()).then(name => { nowPlayingElem.textContent = name.replace(/\.mp3$/i, '').replace(/_/g, ' '); }); }
+                setInterval(updateNowPlaying, 5000); updateNowPlaying();
+            }
+            function initializeSortable(id) { const el = document.getElementById(id); if (!el) return; new Sortable(el, { animation: 150, handle: '.handle', ghostClass: 'sortable-ghost', onEnd: (evt) => { const type = evt.from.dataset.type, order = Array.from(evt.from.children).map(i => i.dataset.filename); fetch('/admin/reorder', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ type, order }) }); }}); }
+            ['song-list', 'jingle-list', 'ad-list'].forEach(initializeSortable);
+            const statusFields = { isPlaying: document.getElementById('status-is-playing'), listeners: document.getElementById('status-listeners'), currentSong: document.getElementById('status-current-song'), nextSong: document.getElementById('status-next-song'), playbackMode: document.getElementById('status-playback-mode'), playbackControls: document.getElementById('playback-controls'),};
+            function prettifyJS(name) { return name ? name.replace(/\.mp3$/i, '').replace(/_/g, ' ') : 'N/A'; }
+            function updateAdminStatus() {
+                fetch('/admin/status').then(r => r.json()).then(data => {
+                    statusFields.listeners.textContent = data.listeners;
+                    statusFields.currentSong.textContent = prettifyJS(data.current_item ? data.current_item.filename : null);
+                    statusFields.nextSong.textContent = prettifyJS(data.next_item ? data.next_item.filename : null);
+                    statusFields.playbackMode.textContent = data.playback_mode.charAt(0).toUpperCase() + data.playback_mode.slice(1);
+                    statusFields.isPlaying.innerHTML = data.is_playing ? '<span class="badge bg-success fs-6">No Ar</span>' : '<span class="badge bg-danger fs-6">Parada</span>';
+                    if (data.is_playing) { statusFields.playbackControls.innerHTML = `<p class="text-muted small">Pare a transmissão para poder remover a faixa que está tocando.</p><form action="/admin/playback" method="POST"><input type="hidden" name="action" value="stop"><button type="submit" class="btn btn-danger w-100">Parar Transmissão</button></form>`; } else { statusFields.playbackControls.innerHTML = `<p class="text-muted small">A transmissão está pausada.</p><form action="/admin/playback" method="POST"><input type="hidden" name="action" value="start"><button type="submit" class="btn btn-success w-100">Iniciar Transmissão</button></form>`; }
+                    document.querySelectorAll('.list-group-item.playing').forEach(el => el.classList.remove('playing'));
+                    if (data.current_item) {
+                        const typeMap = {'song': 'songs', 'jingle': 'jingles', 'ad': 'ads'};
+                        const itemType = typeMap[data.current_item.type];
+                        const filename = data.current_item.filename;
+                        const selector = `ul[data-type="${itemType}"] li[data-filename="${filename}"]`;
+                        const currentItemEl = document.querySelector(selector);
+                        if (currentItemEl) currentItemEl.classList.add('playing');
+                    }
+                });
+            }
+            setInterval(updateAdminStatus, 3000); updateAdminStatus();
+        });
+    </script>
+</body>
+</html>

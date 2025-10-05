@@ -1,0 +1,7 @@
+Flask
+Flask-HTTPAuth
+mutagen
+waitress
+gunicorn>=20.1.0
+gevent
+imageio-ffmpeg

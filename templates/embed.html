@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+    <meta charset="UTF-8">
+    <title>Player da {{ radio_name }}</title>
+    <style>
+        body, html { margin: 0; padding: 0; width: 100%; height: 100%; background-color: transparent; overflow: hidden; }
+        .player-wrapper { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; padding: 10px; box-sizing: border-box; }
+        #now-playing { font-family: sans-serif; font-size: 1.1em; color: #333; margin-bottom: 10px; font-weight: bold; text-align: center; }
+        audio { width: 100%; max-width: 400px; }
+    </style>
+</head>
+<body>
+    <div class="player-wrapper">
+        <div id="now-playing">Conectando...</div>
+        <audio id="player" controls autoplay></audio>
+    </div>
+
+    <script>
+        const player = document.getElementById('player');
+        const nowPlayingElem = document.getElementById('now-playing');
+        
+        if ('MediaSource' in window) {
+            const mediaSource = new MediaSource(); player.src = URL.createObjectURL(mediaSource);
+            mediaSource.addEventListener('sourceopen', () => {
+                const sourceBuffer = mediaSource.addSourceBuffer('audio/mpeg');
+                fetch('/stream').then(response => {
+                    const reader = response.body.getReader();
+                    function push() {
+                        reader.read().then(({ done, value }) => {
+                            if (done) return;
+                            const append = () => { if (value) try { sourceBuffer.appendBuffer(value); } catch(e) { console.error(e); } };
+                            if (sourceBuffer.updating) { sourceBuffer.addEventListener('updateend', append, { once: true }); } else { append(); }
+                            push();
+                        }).catch(err => console.error(err));
+                    }
+                    push();
+                });
+            });
+        } else { player.src = '/stream'; }
+        
+        function updateNowPlaying() { fetch('/now_playing').then(r => r.text()).then(name => { nowPlayingElem.textContent = name.replace(/\.mp3$/i, '').replace(/_/g, ' '); }); }
+        setInterval(updateNowPlaying, 5000); updateNowPlaying();
+    </script>
+</body>
+</html>

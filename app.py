@@ -7,7 +7,6 @@ from werkzeug.utils import secure_filename
 from waitress import serve
 from flask_httpauth import HTTPBasicAuth
 from jinja2.exceptions import TemplateNotFound # Importe a exceção específica
-# https://lmarena.ai/c/50d98abe-5b6e-4d46-8190-85c0f587c0fe
 
 # Importa a nossa lógica de rádio
 from radio_logic import RadioStation, MUSIC_DIR, JINGLES_DIR, ADS_DIR

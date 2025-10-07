@@ -1,9 +1,13 @@
 # radio_python
-Radio Web profissional em python
+Radio Web profissional em Python
 
-# modo de uso
+# requisitos
+
+python 3.11+
 
 pip install -r requirements.txt
+
+# modo de uso
 
 python app.py --port 8080
 

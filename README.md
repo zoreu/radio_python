@@ -15,6 +15,12 @@ painel admin:
 
 Exemplo: http://127.0.0.1:8080/admin
 
+login admin no app.py
+
+user: admin
+
+senha: senha123
+
 link mp3:
 
 Exemplo: http://127.0.0.1:8080/stream

@@ -1,207 +1,408 @@
-# app.py
+# -*- coding: utf-8 -*-
 
-import sys
 import os
-from flask import Flask, Response, render_template, request, redirect, url_for, flash, jsonify
+import sys
+import threading
+import time
+import requests
+import uvicorn
+import yt_dlp
+import secrets
+import shutil
+import base64
+import asyncio
+from urllib.parse import urlparse, unquote_plus # Adiciona unquote_plus
+from fastapi import FastAPI, Request, Response, Form, File, UploadFile, Depends, HTTPException, status
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
+from fastapi.templating import Jinja2Templates
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from werkzeug.utils import secure_filename
-from waitress import serve
-from flask_httpauth import HTTPBasicAuth
-from jinja2.exceptions import TemplateNotFound # Importe a exceção específica
+import logging
+
+# Configurar logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Importa a nossa lógica de rádio
 from radio_logic import RadioStation, MUSIC_DIR, JINGLES_DIR, ADS_DIR
 
-app = Flask(__name__)
-# Chave secreta para mensagens flash (necessário para feedback ao usuário)
-app.secret_key = 'secret123456' 
-app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024
-auth = HTTPBasicAuth()
-
-# --- NOVO: FILTRO CUSTOMIZADO PARA FORMATAR NOMES DE ARQUIVOS ---
-def format_filename(filename):
-    """Remove a extensão .mp3 e substitui underscores por espaços."""
-    # Remove a extensão do arquivo, independentemente de ser .mp3, .MP3, etc.
-    name_without_extension = os.path.splitext(filename)[0]
-    # Substitui underscores por espaços
-    return name_without_extension.replace('_', ' ')
-
-# Registra a função como um filtro no Jinja2 com o nome 'prettify'
-app.jinja_env.filters['prettify'] = format_filename
-
-
-# --- Configuração de Usuário e Senha ---
-# Em um projeto real, isso viria de um banco de dados ou arquivo de configuração!
-users = {
-    "admin": "senha123"
-}
-
-@auth.verify_password
-def verify_password(username, password):
-    if username in users and users[username] == password:
-        return username
-
-# --- Instância Global da Rádio ---
-# Esta é a única instância que controlará tudo.
+# --- INICIALIZAÇÃO DO APP FASTAPI (COMO UM OBJETO) ---
+app = FastAPI(title="Rádio Python PRO")
+templates = Jinja2Templates(directory="templates")
 radio = RadioStation()
 
-# --- Rotas Públicas (para os ouvintes) ---
+# --- Autenticação NATIVA do FastAPI ---
+security = HTTPBasic()
+live_security = HTTPBasic(realm="Live Stream")
+# LOGIN ADMIN E DJ
+users = {"admin": "senha123"}
+live_users = {"dj_live": "senha123"}
 
-@app.route('/')
-def index():
-    """Renderiza a página principal do player para os ouvintes."""
-    return render_template('player.html', radio_name=radio.radio_name)
+def get_current_user(credentials: HTTPBasicCredentials = Depends(security)):
+    current_username_bytes = credentials.username.encode("utf8")
+    correct_username_bytes = b"admin"
+    is_correct_username = secrets.compare_digest(current_username_bytes, correct_username_bytes)
+    current_password_bytes = credentials.password.encode("utf8")
+    correct_password_bytes = users["admin"].encode("utf8")
+    is_correct_password = secrets.compare_digest(current_password_bytes, correct_password_bytes)
+    if not (is_correct_username and is_correct_password):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Credenciais incorretas",
+            headers={"WWW-Authenticate": "Basic"},
+        )
+    return credentials.username
 
-@app.route('/player_embed')
-def player_embed():
-    """Renderiza o player minimalista para ser incorporado via iframe."""
-    return render_template('embed.html', radio_name=radio.radio_name)
+def get_current_live_user(credentials: HTTPBasicCredentials = Depends(live_security)):
+    current_username_bytes = credentials.username.encode("utf8")
+    correct_username_bytes = b"dj_live"
+    is_correct_username = secrets.compare_digest(current_username_bytes, correct_username_bytes)
+    current_password_bytes = credentials.password.encode("utf8")
+    correct_password_bytes = live_users["dj_live"].encode("utf8")
+    is_correct_password = secrets.compare_digest(current_password_bytes, correct_password_bytes)
+    if not (is_correct_username and is_correct_password):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Credenciais incorretas para transmissão ao vivo",
+            headers={"WWW-Authenticate": "Basic realm='Live Stream'"},
+        )
+    return credentials.username
 
-@app.route('/stream')
-def audio_stream():
+# --- Filtro Jinja2 e Evento Startup ---
+def format_filename(filename: str):
+    if not filename: return ""
+    return os.path.splitext(filename)[0].replace('_', ' ')
+templates.env.filters['prettify'] = format_filename
+
+@app.on_event("startup")
+def startup_event():
+    logger.info(">>> Evento Startup do FastAPI: Iniciando threads da rádio... <<<")
+    radio.start()
+
+# --- ROTAS FASTAPI (TUDO EXCETO /live) ---
+# Cole aqui TODAS as suas rotas do FastAPI, de '/' até as rotas falsas do admin.
+# Elas funcionarão normalmente quando o "guarda de trânsito" as chamar.
+@app.get("/", response_class=HTMLResponse)
+async def index(request: Request):
+    return templates.TemplateResponse("player.html", {"request": request, "radio_name": radio.radio_name})
+
+@app.get("/player_embed", response_class=HTMLResponse)
+async def player_embed(request: Request):
+    return templates.TemplateResponse("embed.html", {"request": request, "radio_name": radio.radio_name})
+
+@app.get("/stream")
+async def audio_stream():
     def stream_generator():
         queue = radio.add_listener()
         try:
-            while True:
-                yield queue.get()
-        finally:
-            radio.remove_listener(queue)
+            while True: yield queue.get()
+        finally: radio.remove_listener(queue)
+    return StreamingResponse(stream_generator(), media_type="audio/mpeg", headers={'Cache-Control': 'no-cache'})
 
-    response = Response(stream_generator(), mimetype='audio/mpeg')
-    response.headers['Cache-Control'] = 'no-cache'
-    return response
-
-@app.route('/now_playing')
-def now_playing():
-    return radio.current_song_info
-
-# --- Rotas do Painel de Administração ---
-
-@app.route('/admin')
-@auth.login_required
-def admin_panel():
+@app.get("/now_playing")
+async def now_playing():
+    # Agora retorna a informação correta, seja do Auto DJ ou do Ao Vivo
     status = radio.get_status()
-    songs = radio.master_song_list
-    jingles = radio.master_jingle_list
-    ads = radio.master_ad_list
-    return render_template('admin.html', status=status, songs=songs, jingles=jingles, ads=ads)
+    return Response(content=status['current_song_info_display'], media_type="text/plain")
+    
+@app.get("/admin", response_class=HTMLResponse)
+async def admin_panel(request: Request, user: str = Depends(get_current_user)):
+    status = radio.get_status()
+    djuser, djpass = next(iter(live_users.items()))
+    context = {"request": request, "status": status, "songs": radio.master_song_list, "jingles": radio.master_jingle_list, "ads": radio.master_ad_list, 'djuser': djuser, 'djpass': djpass}
+    return templates.TemplateResponse("admin.html", context)
 
-@app.route('/admin/upload', methods=['POST'])
-@auth.login_required
-def upload_file():
-    upload_type = request.form.get('type')
-    if upload_type not in ['song', 'jingle', 'ad'] or 'file' not in request.files:
-        flash('Requisição inválida.', 'danger')
-        return redirect(url_for('admin_panel'))
+@app.get("/admin/status")
+async def admin_status(user: str = Depends(get_current_user)):
+    status = radio.get_status()
+    status['is_live'] = radio.live_source_active
+    return JSONResponse(content=status)
 
-    file = request.files['file']
-    if file.filename == '':
-        flash('Nenhum arquivo selecionado.', 'warning')
-        return redirect(url_for('admin_panel'))
-
-    if file and file.filename.endswith('.mp3'):
+@app.post("/admin/upload")
+async def upload_file_route(type: str = Form(...), file: UploadFile = File(...), user: str = Depends(get_current_user)):
+    if type in ['song', 'jingle', 'ad'] and file.filename.endswith('.mp3'):
         filename = secure_filename(file.filename)
         dir_map = {'song': MUSIC_DIR, 'jingle': JINGLES_DIR, 'ad': ADS_DIR}
-        save_path = os.path.join(dir_map[upload_type], filename)
-        file.save(save_path)
-        radio.reload_master_lists(list_type=f"{upload_type}s")
-        flash(f'{upload_type.capitalize()} "{filename}" enviado com sucesso!', 'success')
-    else:
-        flash('Formato de arquivo inválido. Apenas .mp3 é permitido.', 'danger')
-        
-    return redirect(url_for('admin_panel'))
+        save_path = os.path.join(dir_map[type], filename)
+        with open(save_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+        radio.reload_master_lists(list_type=f"{type}s")
+    return RedirectResponse(url="/admin", status_code=303)
 
-@app.route('/admin/delete', methods=['POST'])
-@auth.login_required
-def delete_file():
-    file_type = request.form.get('type')
-    filename = request.form.get('filename')
-    
-    if not all([file_type, filename]):
-        flash('Requisição de exclusão inválida.', 'danger')
-        return redirect(url_for('admin_panel'))
-
+@app.post("/admin/delete")
+async def delete_file_route(type: str = Form(...), filename: str = Form(...), user: str = Depends(get_current_user)):
     dir_map = {'song': MUSIC_DIR, 'jingle': JINGLES_DIR, 'ad': ADS_DIR}
-    file_path = os.path.join(dir_map[file_type], filename)
-
+    file_path = os.path.join(dir_map[type], filename)
     if os.path.exists(file_path):
         os.remove(file_path)
-        radio.reload_master_lists(list_type=f"{file_type}s")
-        flash(f'{file_type.capitalize()} "{filename}" excluído com sucesso!', 'success')
-    else:
-        flash('Arquivo não encontrado.', 'danger')
+        radio.reload_master_lists(list_type=f"{type}s")
+    return RedirectResponse(url="/admin", status_code=303)
 
-    return redirect(url_for('admin_panel'))
-
-@app.route('/admin/settings/playback', methods=['POST'])
-@auth.login_required
-def update_playback_settings():
-    mode = request.form.get('playback_mode')
-    jingle_interval = request.form.get('jingle_interval')
-    ad_interval = request.form.get('ad_interval')
-    radio.set_playback_mode(mode)
+@app.post("/admin/settings/playback")
+async def update_playback_settings(playback_mode: str = Form(...), jingle_interval: int = Form(...), ad_interval: int = Form(...), user: str = Depends(get_current_user)):
+    radio.set_playback_mode(playback_mode)
     radio.set_intervals(jingle_interval, ad_interval)
-    flash('Configurações de reprodução atualizadas!', 'success')
-    return redirect(url_for('admin_panel'))
+    return RedirectResponse(url="/admin", status_code=303)
 
-@app.route('/admin/settings/general', methods=['POST'])
-@auth.login_required
-def update_general_settings():
-    new_name = request.form.get('radio_name')
-    if new_name:
-        radio.set_radio_name(new_name)
-        flash('Nome da rádio atualizado com sucesso!', 'success')
-    else:
-        flash('O nome da rádio não pode ser vazio.', 'danger')
-    return redirect(url_for('admin_panel'))
+@app.post("/admin/settings/general")
+async def update_general_settings(radio_name: str = Form(...), user: str = Depends(get_current_user)):
+    if radio_name:
+        radio.set_radio_name(radio_name)
+    return RedirectResponse(url="/admin", status_code=303)
 
-@app.route('/admin/playback', methods=['POST'])
-@auth.login_required
-def control_playback():
-    action = request.form.get('action')
+@app.post("/admin/playback")
+async def control_playback(action: str = Form(...), user: str = Depends(get_current_user)):
     if action == 'stop':
         radio.stop_playback()
-        flash('Transmissão parada! Os ouvintes estão recebendo silêncio.', 'warning')
     elif action == 'start':
         radio.start_playback()
-        flash('Transmissão iniciada!', 'success')
-    return redirect(url_for('admin_panel'))
+    return RedirectResponse(url="/admin", status_code=303)
 
-@app.route('/admin/reorder', methods=['POST'])
-@auth.login_required
-def reorder_files():
-    data = request.get_json()
+@app.post("/admin/reorder")
+async def reorder_files(request: Request, user: str = Depends(get_current_user)):
+    data = await request.json()
     file_type = data.get('type')
-    ordered_filenames = data.get('order')
+    order = data.get('order')
+    radio.save_order(file_type, order)
+    return JSONResponse(content={"status": "success"})
 
-    if file_type not in ['songs', 'jingles', 'ads'] or not isinstance(ordered_filenames, list):
-        return jsonify({"status": "error", "message": "Invalid data"}), 400
+@app.post("/admin/search")
+async def search_youtube(query: str = Form(...), user: str = Depends(get_current_user)):
+    ydl_opts = {
+        'format': 'bestaudio/best',
+        'noplaylist': True,
+        'default_search': 'ytsearch5',
+        'quiet': True
+    }
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            result = ydl.extract_info(query, download=False)
+            videos = result.get('entries', [])
+            search_results = [
+                {
+                    'id': v.get('id'),
+                    'title': v.get('title'),
+                    'thumbnail': v.get('thumbnail'),
+                    'duration': time.strftime('%M:%S', time.gmtime(v.get('duration', 0)))
+                } for v in videos
+            ]
+            return JSONResponse(content=search_results)
+    except Exception as e:
+        return JSONResponse(content={"error": str(e)}, status_code=500)
 
-    radio.save_order(file_type, ordered_filenames)
+@app.post("/admin/download")
+async def download_youtube(video_id: str = Form(...), user: str = Depends(get_current_user)):
+    def download_in_background(vid):
+        ydl_opts = {
+            'format': 'bestaudio/best',
+            'outtmpl': os.path.join(MUSIC_DIR, '%(title)s.%(ext)s'),
+            'postprocessors': [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'mp3',
+                'preferredquality': '128'
+            }],
+            'noplaylist': True,
+            'quiet': True
+        }
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                ydl.download([f'https://www.youtube.com/watch?v={vid}'])
+            radio.reload_master_lists(list_type='songs')
+        except Exception as e:
+            print(f"Erro no download do vídeo {vid}: {e}")
+    thread = threading.Thread(target=download_in_background, args=(video_id,))
+    thread.daemon = True
+    thread.start()
+    return JSONResponse(content={"status": "success"})
+
+@app.post("/admin/download_from_url")
+async def download_from_url(type: str = Form(...), url: str = Form(...), user: str = Depends(get_current_user)):
+    def download_task(target_url, f_type):
+        try:
+            filename = os.path.basename(urlparse(target_url).path) or f"download_{int(time.time())}.mp3"
+            filename = secure_filename(filename)
+            dir_map = {'jingle': JINGLES_DIR, 'ad': ADS_DIR}
+            save_path = os.path.join(dir_map[f_type], filename)
+            with requests.get(target_url, headers={'User-Agent': 'Mozilla/5.0'}, stream=True, timeout=30) as r:
+                r.raise_for_status()
+                with open(save_path, "wb") as f:
+                    shutil.copyfileobj(r.raw, f)
+            radio.reload_master_lists(list_type=f"{f_type}s")
+        except Exception as e:
+            print(f"Erro ao baixar da URL {target_url}: {e}")
+    thread = threading.Thread(target=download_task, args=(url, type))
+    thread.daemon = True
+    thread.start()
+    return RedirectResponse(url="/admin", status_code=303)
+
+# --- Rotas Falsas para o RadioBOSS (evita erros 404 no log) ---
+@app.get("/admin/listclients")
+async def list_clients(mount: str, user: str = Depends(get_current_live_user)):
+    return Response(content="<icestats></icestats>", media_type="application/xml")
+
+@app.get("/admin/metadata")
+async def update_metadata(mode: str, mount: str, song: str, user: str = Depends(get_current_live_user)):
+    # O Radio Boss envia o nome da música aqui.
+    # O parâmetro 'user' foi removido pois esta rota pode não ser autenticada por alguns clientes
+    if mount == '/live' and mode == 'updinfo':
+        # 'unquote_plus' decodifica caracteres especiais como '%20' para espaços
+        song_name = unquote_plus(song)
+        radio.update_live_metadata(song_name)
+    return Response(content="Metadata updated.", media_type="text/plain")
+
+# --- LÓGICA DO SERVIDOR HÍBRIDO (O "GUARDA DE TRÂNSITO") ---
+
+# 1. Manipulador Especializado para o Ao Vivo
+async def handle_live_source(reader, writer):
+    addr = writer.get_extra_info('peername')
+    logger.info(f"[{addr}] Conexão interceptada, tratando como possível Ao Vivo.")
+    try:
+        # Lê apenas os cabeçalhos
+        header_raw = await asyncio.wait_for(reader.readuntil(b'\r\n\r\n'), timeout=10.0)
+        headers = header_raw.decode('latin-1').split('\r\n')
+        
+        # Autenticação
+        auth_header = next((h for h in headers if h.lower().startswith('authorization: basic ')), None)
+        if not auth_header: raise Exception("Autenticação não fornecida")
+        encoded_creds = auth_header.split(' ')[2]
+        decoded_creds = base64.b64decode(encoded_creds).decode('utf-8')
+        username, password = decoded_creds.split(':', 1)
+        if not (username in live_users and secrets.compare_digest(password, live_users[username])):
+            raise Exception("Credenciais inválidas")
+            
+        # Responde OK e inicia o modo Ao Vivo
+        writer.write(b'HTTP/1.0 200 OK\r\nIcecast-Auth: 1\r\n\r\n')
+        await writer.drain()
+        radio.go_live()
+        
+        # Loop para receber o áudio
+        while True:
+            chunk = await reader.read(4096)
+            if not chunk: break
+            radio.live_queue.put(chunk)
+    except Exception as e:
+        logger.error(f"[Live Handler {addr}] Erro: {e}")
+    finally:
+        radio.end_live()
+        writer.close()
+        await writer.wait_closed()
+        logger.info(f"[*] Conexão Ao Vivo de {addr} encerrada.")
+
+# 2. Proxy Transparente para o FastAPI
+async def proxy_to_fastapi(reader, writer, initial_data, internal_port: int):
+    addr = writer.get_extra_info('peername')
+    logger.info(f"[{addr}] Roteando para o servidor FastAPI interno.")
+    try:
+        # Conecta-se ao servidor Uvicorn que está rodando internamente
+        fastapi_reader, fastapi_writer = await asyncio.open_connection('127.0.0.1', internal_port)
+        
+        # Envia os dados que já lemos
+        fastapi_writer.write(initial_data)
+        await fastapi_writer.drain()
+        
+        # Inicia a retransmissão de dados nos dois sentidos
+        async def forward(src_reader, dst_writer):
+            while not src_reader.at_eof():
+                data = await src_reader.read(4096)
+                if not data: break
+                dst_writer.write(data)
+                await dst_writer.drain()
+            # Garante que o fim da conexão seja propagado
+            if not dst_writer.is_closing():
+                dst_writer.close()
+                await dst_writer.wait_closed()
+
+        await asyncio.gather(
+            forward(reader, fastapi_writer),
+            forward(fastapi_reader, writer)
+        )
+    except Exception as e:
+        logger.error(f"Erro no proxy para o FastAPI de {addr}: {e}")
+    finally:
+        if not writer.is_closing():
+            writer.close()
+            await writer.wait_closed()
+
+# 3. O Roteador Principal
+async def connection_handler(reader, writer, internal_port: int):
+    try:
+        # Espia a primeira parte da requisição para decidir o que fazer
+        initial_data = await asyncio.wait_for(reader.read(1024), timeout=5.0)
+        if not initial_data: return
+
+        first_line = initial_data.split(b'\r\n', 1)[0].decode('latin-1', errors='ignore')
+
+        if first_line.startswith('SOURCE /live') or first_line.startswith('PUT /live'):
+            # É o Radio Boss! Precisamos passar os dados já lidos para o handler
+            # Criamos um "reader falso" para juntar os dados
+            new_reader = asyncio.StreamReader()
+            new_reader.feed_data(initial_data)
+            
+            # Encaminha o resto dos dados do reader original para o novo
+            async def feed_new_reader():
+                while True:
+                    data = await reader.read(4096)
+                    if not data:
+                        new_reader.feed_eof()
+                        break
+                    new_reader.feed_data(data)
+            
+            asyncio.create_task(feed_new_reader())
+            await handle_live_source(new_reader, writer)
+        else:
+            # É uma requisição web normal, passa para o proxy
+            await proxy_to_fastapi(reader, writer, initial_data, internal_port)
+    except asyncio.TimeoutError:
+        pass # Cliente conectou e não enviou nada
+    except Exception as e:
+        logger.error(f"Erro no handler de conexão: {e}")
+    finally:
+        if not writer.is_closing():
+            writer.close()
+            await writer.wait_closed()
+
+# 4. Orquestrador de Inicialização
+async def main_loop(public_port):
+    internal_port = public_port + 1
+    # Inicia o servidor Uvicorn para o FastAPI em uma porta interna e em background
+    config = uvicorn.Config(app, host="127.0.0.1", port=internal_port, log_level="info")
+    server = uvicorn.Server(config)
+    uvicorn_thread = threading.Thread(target=server.run)
+    uvicorn_thread.daemon = True
+    uvicorn_thread.start()
     
-    return jsonify({"status": "success"})
+    # Aguarda um segundo para o Uvicorn iniciar
+    await asyncio.sleep(1)
 
-@app.route('/admin/status')
-@auth.login_required
-def admin_status():
-    """Fornece o status completo da rádio como JSON para o frontend."""
-    return jsonify(radio.get_status())
+    # Inicia o nosso "guarda de trânsito" na porta pública
+    public_server = await asyncio.start_server(
+        lambda r, w: connection_handler(r, w, internal_port=internal_port), 
+        "0.0.0.0", 
+        public_port
+    )
+    
+    logger.info(f"Servidor Híbrido rodando na porta pública {public_port}")
+    logger.info(f"FastAPI interno rodando na porta {public_port + 1}")
+    
+    async with public_server:
+        await public_server.serve_forever()
 
-# --- Inicialização ---
+
+# --- INICIALIZAÇÃO UNIVERSAL ---
 if __name__ == '__main__':
-    radio.start()
-    host = "0.0.0.0"
+    #host = "0.0.0.0"
     port = 8000    
     args = sys.argv[1:]
     i = 0
     while i < len(args):
         a = args[i]
-        if a in ("--host", "-h"):
-            if i+1 < len(args):
-                host = args[i+1]
-                i += 2
-            else:
-                raise SystemExit("Erro: --host precisa de um valor")
-        elif a in ("--port", "-p"):
+        # if a in ("--host", "-h"):
+        #     if i+1 < len(args):
+        #         host = args[i+1]
+        #         i += 2
+        #     else:
+        #         raise SystemExit("Erro: --host precisa de um valor")
+        if a in ("--port", "-p"):
             if i+1 < len(args):
                 try:
                     port = int(args[i+1])
@@ -212,7 +413,15 @@ if __name__ == '__main__':
                 raise SystemExit("Erro: --port precisa de um valor")
         else:
             # ignora ou trate outros args aqui
-            i += 1
-    print(f"Iniciando servidor de produção Waitress em http://{host}:{port}")
-    print(f"Acesse o painel em http://{host}:{port}/admin (usuário: admin, senha: senha123)")
-    serve(app, host=host, port=port, threads=100)
+            i += 1    
+
+    print("="*50)
+    print(">>> Iniciando Rádio PRO (Servidor Híbrido FastAPI + AsyncIO) <<<")
+    print(f"Servidor público escutando em: http://0.0.0.0:{port}")
+    print(f"Painel Admin em: http://127.0.0.1:{port}/admin")
+    print("="*50)
+
+    try:
+        asyncio.run(main_loop(port))
+    except KeyboardInterrupt:
+        print("\nServidor encerrado.")

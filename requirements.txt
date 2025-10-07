@@ -1,7 +1,8 @@
-Flask
-Flask-HTTPAuth
-mutagen
-waitress
-gunicorn>=20.1.0
-gevent
+fastapi
+uvicorn[standard]
+python-multipart
+jinja2
 imageio-ffmpeg
+yt-dlp
+requests
+werkzeug

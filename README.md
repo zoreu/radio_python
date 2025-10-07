@@ -5,5 +5,13 @@ Radio Web em python
 
 pip install -r requirements.txt
 
-python app.py --host 0.0.0.0 --port 8080
+python app.py --port 8080
+
+painel admin:
+
+Exemplo: http://127.0.0.1:8080/admin
+
+link mp3:
+
+Exemplo: http://127.0.0.1:8080/stream
 

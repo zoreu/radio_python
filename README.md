@@ -1,5 +1,5 @@
 # radio_python
-Radio Web em python
+Radio Web profissional em python
 
 # modo de uso
 

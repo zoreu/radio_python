@@ -19,7 +19,7 @@ login admin no app.py
 
 user: admin
 
-senha: senha123
+senha: 12345
 
 player teste:
 

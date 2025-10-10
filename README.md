@@ -1,5 +1,5 @@
 # radio_python
-Radio Web profissional em Python
+Servidor de Radio Web profissional em Python
 
 # caracteristicas
 

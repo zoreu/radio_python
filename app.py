@@ -74,9 +74,6 @@ def startup_event():
     logger.info(">>> Evento Startup do FastAPI: Iniciando threads da rádio... <<<")
     radio.start()
 
-# --- ROTAS FASTAPI (TUDO EXCETO /live) ---
-# Cole aqui TODAS as suas rotas do FastAPI, de '/' até as rotas falsas do admin.
-# Elas funcionarão normalmente quando o "guarda de trânsito" as chamar.
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
     return templates.TemplateResponse("player.html", {"request": request, "radio_name": radio.radio_name})
@@ -109,13 +106,6 @@ async def now_playing():
     status = radio.get_status()
     return Response(content=status['current_song_info_display'], media_type="text/plain")
     
-# @app.get("/admin", response_class=HTMLResponse)
-# async def admin_panel(request: Request, user: str = Depends(get_current_user)):
-#     status = radio.get_status()
-#     djuser, djpass = next(iter(live_users.items()))
-#     context = {"request": request, "status": status, "songs": radio.master_song_list, "jingles": radio.master_jingle_list, "ads": radio.master_ad_list, 'djuser': djuser, 'djpass': djpass}
-#     return templates.TemplateResponse("admin.html", context)
-
 @app.get("/admin", response_class=HTMLResponse)
 async def admin_panel(request: Request, user: str = Depends(get_current_user)):
     status = radio.get_status()
@@ -431,7 +421,6 @@ async def main_loop(public_port):
 
 # --- INICIALIZAÇÃO UNIVERSAL ---
 if __name__ == '__main__':
-    #host = "0.0.0.0"
     port = 8000    
     args = sys.argv[1:]
     i = 0

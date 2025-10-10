@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
-
-import os
 import sys
+import os
 import threading
 import time
 import requests
@@ -15,9 +14,12 @@ from urllib.parse import urlparse, unquote_plus # Adiciona unquote_plus
 from fastapi import FastAPI, Request, Response, Form, File, UploadFile, Depends, HTTPException, status
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
+from fastapi.staticfiles import StaticFiles
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from werkzeug.utils import secure_filename
 import logging
+
+PORT_LIVE_TEMP = 8080
 
 # Configurar logging
 logging.basicConfig(level=logging.INFO)
@@ -28,24 +30,22 @@ from radio_logic import RadioStation, MUSIC_DIR, JINGLES_DIR, ADS_DIR
 
 # --- INICIALIZAÇÃO DO APP FASTAPI (COMO UM OBJETO) ---
 app = FastAPI(title="Rádio Python PRO")
+os.makedirs('static', exist_ok=True)
+app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
 radio = RadioStation()
 
 # --- Autenticação NATIVA do FastAPI ---
 security = HTTPBasic()
 live_security = HTTPBasic(realm="Live Stream")
-# LOGIN ADMIN E DJ
-users = {"admin": "senha123"}
-live_users = {"dj_live": "senha123"}
+# users = {"admin": "db17528"}
+# live_users = {"dj_live": "db17528"}
 
 def get_current_user(credentials: HTTPBasicCredentials = Depends(security)):
-    current_username_bytes = credentials.username.encode("utf8")
-    correct_username_bytes = b"admin"
-    is_correct_username = secrets.compare_digest(current_username_bytes, correct_username_bytes)
-    current_password_bytes = credentials.password.encode("utf8")
-    correct_password_bytes = users["admin"].encode("utf8")
-    is_correct_password = secrets.compare_digest(current_password_bytes, correct_password_bytes)
-    if not (is_correct_username and is_correct_password):
+    """Verifica as credenciais do painel de administração."""
+    is_user_ok = secrets.compare_digest(credentials.username, radio.admin_user)
+    is_pass_ok = secrets.compare_digest(credentials.password, radio.admin_password)
+    if not (is_user_ok and is_pass_ok):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Credenciais incorretas",
@@ -54,13 +54,10 @@ def get_current_user(credentials: HTTPBasicCredentials = Depends(security)):
     return credentials.username
 
 def get_current_live_user(credentials: HTTPBasicCredentials = Depends(live_security)):
-    current_username_bytes = credentials.username.encode("utf8")
-    correct_username_bytes = b"dj_live"
-    is_correct_username = secrets.compare_digest(current_username_bytes, correct_username_bytes)
-    current_password_bytes = credentials.password.encode("utf8")
-    correct_password_bytes = live_users["dj_live"].encode("utf8")
-    is_correct_password = secrets.compare_digest(current_password_bytes, correct_password_bytes)
-    if not (is_correct_username and is_correct_password):
+    """Verifica as credenciais do DJ ao vivo."""
+    is_user_ok = secrets.compare_digest(credentials.username, radio.live_user)
+    is_pass_ok = secrets.compare_digest(credentials.password, radio.live_password)
+    if not (is_user_ok and is_pass_ok):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Credenciais incorretas para transmissão ao vivo",
@@ -99,17 +96,32 @@ async def audio_stream():
         finally: radio.remove_listener(queue)
     return StreamingResponse(stream_generator(), media_type="audio/mpeg", headers={'Cache-Control': 'no-cache'})
 
+@app.get("/status")
+async def public_status():
+    status = radio.get_status()
+    return JSONResponse(content={
+        "radio_name": status.get("radio_name"),
+        "current_song_info_display": status.get("current_song_info_display"),
+        "current_cover_url": status.get("current_cover_url")
+    })
+
 @app.get("/now_playing")
 async def now_playing():
     # Agora retorna a informação correta, seja do Auto DJ ou do Ao Vivo
     status = radio.get_status()
     return Response(content=status['current_song_info_display'], media_type="text/plain")
     
+# @app.get("/admin", response_class=HTMLResponse)
+# async def admin_panel(request: Request, user: str = Depends(get_current_user)):
+#     status = radio.get_status()
+#     djuser, djpass = next(iter(live_users.items()))
+#     context = {"request": request, "status": status, "songs": radio.master_song_list, "jingles": radio.master_jingle_list, "ads": radio.master_ad_list, 'djuser': djuser, 'djpass': djpass}
+#     return templates.TemplateResponse("admin.html", context)
+
 @app.get("/admin", response_class=HTMLResponse)
 async def admin_panel(request: Request, user: str = Depends(get_current_user)):
     status = radio.get_status()
-    djuser, djpass = next(iter(live_users.items()))
-    context = {"request": request, "status": status, "songs": radio.master_song_list, "jingles": radio.master_jingle_list, "ads": radio.master_ad_list, 'djuser': djuser, 'djpass': djpass}
+    context = {"request": request, "status": status, "songs": radio.master_song_list, "jingles": radio.master_jingle_list, "ads": radio.master_ad_list, 'port_live': PORT_LIVE_TEMP}
     return templates.TemplateResponse("admin.html", context)
 
 @app.get("/admin/status")
@@ -140,14 +152,24 @@ async def delete_file_route(type: str = Form(...), filename: str = Form(...), us
 
 @app.post("/admin/settings/playback")
 async def update_playback_settings(playback_mode: str = Form(...), jingle_interval: int = Form(...), ad_interval: int = Form(...), user: str = Depends(get_current_user)):
-    radio.set_playback_mode(playback_mode)
-    radio.set_intervals(jingle_interval, ad_interval)
+    radio.set_playback_mode(playback_mode); radio.set_intervals(jingle_interval, ad_interval)
     return RedirectResponse(url="/admin", status_code=303)
 
 @app.post("/admin/settings/general")
 async def update_general_settings(radio_name: str = Form(...), user: str = Depends(get_current_user)):
-    if radio_name:
-        radio.set_radio_name(radio_name)
+    if radio_name: radio.set_radio_name(radio_name)
+    return RedirectResponse(url="/admin", status_code=303)
+
+@app.post("/admin/settings/live")
+async def update_live_settings(live_user: str = Form(...), live_password: str = Form(None), user: str = Depends(get_current_user)):
+    if live_password == "": live_password = None
+    radio.set_live_credentials(live_user, live_password)
+    return RedirectResponse(url="/admin", status_code=303)
+
+@app.post("/admin/settings/admin_credentials")
+async def update_admin_credentials(admin_user: str = Form(...), admin_password: str = Form(None), user: str = Depends(get_current_user)):
+    if admin_password == "": admin_password = None
+    radio.set_admin_credentials(admin_user, admin_password)
     return RedirectResponse(url="/admin", status_code=303)
 
 @app.post("/admin/playback")
@@ -250,32 +272,46 @@ async def update_metadata(mode: str, mount: str, song: str, user: str = Depends(
         radio.update_live_metadata(song_name)
     return Response(content="Metadata updated.", media_type="text/plain")
 
+@app.post("/admin/settings/general")
+async def update_general_settings(radio_name: str = Form(...), user: str = Depends(get_current_user)):
+    if radio_name:
+        radio.set_radio_name(radio_name)
+    return RedirectResponse(url="/admin", status_code=303)
+
+@app.post("/admin/settings/live")
+async def update_live_settings(live_user: str = Form(...), live_password: str = Form(None), user: str = Depends(get_current_user)):
+    if live_password == "": live_password = None
+    radio.set_live_credentials(live_user, live_password)
+    return RedirectResponse(url="/admin", status_code=303)
+
 # --- LÓGICA DO SERVIDOR HÍBRIDO (O "GUARDA DE TRÂNSITO") ---
 
 # 1. Manipulador Especializado para o Ao Vivo
 async def handle_live_source(reader, writer):
     addr = writer.get_extra_info('peername')
-    logger.info(f"[{addr}] Conexão interceptada, tratando como possível Ao Vivo.")
+    logger.info(f"[{addr}] Roteado para o manipulador Ao Vivo.")
     try:
-        # Lê apenas os cabeçalhos
         header_raw = await asyncio.wait_for(reader.readuntil(b'\r\n\r\n'), timeout=10.0)
         headers = header_raw.decode('latin-1').split('\r\n')
         
-        # Autenticação
+        ice_name_header = next((h for h in headers if h.lower().startswith('ice-name: ')), None)
+        if ice_name_header: radio.update_live_metadata(ice_name_header.split(':', 1)[1].strip())
+
         auth_header = next((h for h in headers if h.lower().startswith('authorization: basic ')), None)
         if not auth_header: raise Exception("Autenticação não fornecida")
+        
         encoded_creds = auth_header.split(' ')[2]
         decoded_creds = base64.b64decode(encoded_creds).decode('utf-8')
         username, password = decoded_creds.split(':', 1)
-        if not (username in live_users and secrets.compare_digest(password, live_users[username])):
+        if not (secrets.compare_digest(username, radio.live_user) and secrets.compare_digest(password, radio.live_password)):
             raise Exception("Credenciais inválidas")
             
-        # Responde OK e inicia o modo Ao Vivo
         writer.write(b'HTTP/1.0 200 OK\r\nIcecast-Auth: 1\r\n\r\n')
         await writer.drain()
         radio.go_live()
         
-        # Loop para receber o áudio
+        # O corpo que veio junto com os cabeçalhos já foi lido por readuntil,
+        # então o reader está pronto para o stream de áudio.
         while True:
             chunk = await reader.read(4096)
             if not chunk: break
@@ -284,8 +320,7 @@ async def handle_live_source(reader, writer):
         logger.error(f"[Live Handler {addr}] Erro: {e}")
     finally:
         radio.end_live()
-        writer.close()
-        await writer.wait_closed()
+        if not writer.is_closing(): writer.close(); await writer.wait_closed()
         logger.info(f"[*] Conexão Ao Vivo de {addr} encerrada.")
 
 # 2. Proxy Transparente para o FastAPI
@@ -325,35 +360,41 @@ async def proxy_to_fastapi(reader, writer, initial_data, internal_port: int):
 
 # 3. O Roteador Principal
 async def connection_handler(reader, writer, internal_port: int):
+    initial_data = b''
     try:
-        # Espia a primeira parte da requisição para decidir o que fazer
-        initial_data = await asyncio.wait_for(reader.read(1024), timeout=5.0)
+        # Espia a primeira parte da requisição.
+        # read(n) é mais seguro que readline() para dados brutos.
+        initial_data = await asyncio.wait_for(reader.read(2048), timeout=5.0)
         if not initial_data: return
 
         first_line = initial_data.split(b'\r\n', 1)[0].decode('latin-1', errors='ignore')
 
         if first_line.startswith('SOURCE /live') or first_line.startswith('PUT /live'):
-            # É o Radio Boss! Precisamos passar os dados já lidos para o handler
-            # Criamos um "reader falso" para juntar os dados
+            # Cria um novo "leitor" que começa com os dados que já pegamos
             new_reader = asyncio.StreamReader()
             new_reader.feed_data(initial_data)
             
-            # Encaminha o resto dos dados do reader original para o novo
+            # Encaminha o resto dos dados do leitor original para o novo
             async def feed_new_reader():
                 while True:
-                    data = await reader.read(4096)
-                    if not data:
+                    try:
+                        data = await reader.read(4096)
+                        if not data:
+                            new_reader.feed_eof()
+                            break
+                        new_reader.feed_data(data)
+                    except:
                         new_reader.feed_eof()
                         break
-                    new_reader.feed_data(data)
             
             asyncio.create_task(feed_new_reader())
+            # Chama o handler do ao vivo com o NOVO leitor
             await handle_live_source(new_reader, writer)
         else:
             # É uma requisição web normal, passa para o proxy
             await proxy_to_fastapi(reader, writer, initial_data, internal_port)
-    except asyncio.TimeoutError:
-        pass # Cliente conectou e não enviou nada
+            
+    except asyncio.TimeoutError: pass
     except Exception as e:
         logger.error(f"Erro no handler de conexão: {e}")
     finally:
@@ -363,6 +404,8 @@ async def connection_handler(reader, writer, internal_port: int):
 
 # 4. Orquestrador de Inicialização
 async def main_loop(public_port):
+    global PORT_LIVE_TEMP
+    PORT_LIVE_TEMP = public_port
     internal_port = public_port + 1
     # Inicia o servidor Uvicorn para o FastAPI em uma porta interna e em background
     config = uvicorn.Config(app, host="127.0.0.1", port=internal_port, log_level="info")

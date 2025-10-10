@@ -3,29 +3,29 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{{ radio_name }}</title>
+    <title>Carregando Rádio...</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?=Inter:wght@400;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;700&display=swap" rel="stylesheet">
     <style>
         :root { --brand-color: #1DB954; --dark-bg: #121212; --card-bg: #1e1e1e; --text-color: #fff; --text-muted: #888; }
         body { font-family: 'Inter', sans-serif; display: flex; flex-direction: column; justify-content: center; align-items: center; min-height: 100vh; margin: 0; background: var(--dark-bg); color: var(--text-color); padding: 20px; box-sizing: border-box; }
-        .player-container { text-align: center; background: var(--card-bg); padding: 30px 40px; border-radius: 20px; box-shadow: 0 10px 40px rgba(0,0,0,0.7); width: 100%; max-width: 400px; backdrop-filter: blur(10px); }
-        .album-art { width: 150px; height: 150px; background: #333; border-radius: 15px; margin: 0 auto 20px auto; display: flex; align-items: center; justify-content: center; font-size: 50px; }
+        .player-container { text-align: center; background: var(--card-bg); padding: 30px 40px; border-radius: 20px; box-shadow: 0 10px 40px rgba(0,0,0,0.7); width: 100%; max-width: 400px; }
+        .album-art { width: 250px; height: 250px; background-color: #333; background-image: url('/static/cover/default.png'); background-size: cover; background-position: center; border-radius: 15px; margin: 0 auto 20px auto; display: flex; align-items: center; justify-content: center; font-size: 50px; color: transparent; transition: background-image 0.5s ease-in-out; }
         h1 { margin: 0 0 10px 0; font-size: 2em; }
-        #now-playing { font-size: 1.1em; min-height: 1.5em; margin: 10px 0 25px 0; font-weight: bold; color: var(--brand-color); transition: color 0.3s; }
+        #now-playing { font-size: 1.1em; min-height: 1.5em; margin: 10px 0 25px 0; font-weight: bold; color: var(--brand-color); }
         #status { font-size: 0.9em; color: var(--text-muted); }
         audio { margin-top: 20px; width: 100%; }
-        .embed-section { margin-top: 40px; width: 100%; max-width: 400px; }
+        .embed-section { margin-top: 40px; width: 100%; max-width: 400px; background: var(--card-bg); padding: 20px; border-radius: 15px; }
         textarea { width: 100%; background: #333; color: #ccc; border: 1px solid #444; border-radius: 8px; padding: 10px; font-family: monospace; resize: none; margin-bottom: 10px; }
-        .copy-btn { background: var(--brand-color); color: white; border: none; padding: 10px 20px; border-radius: 8px; cursor: pointer; font-weight: bold; transition: background-color 0.2s; }
+        .copy-btn { background: var(--brand-color); color: white; border: none; padding: 10px 20px; border-radius: 8px; cursor: pointer; font-weight: bold; transition: background-color 0.2s; width: 100%; }
         .copy-btn:hover { background: #17a048; }
     </style>
 </head>
 <body>
     <div class="player-container">
-        <div class="album-art">🎵</div>
-        <h1>{{ radio_name }}</h1>
+        <div class="album-art" id="album-art"></div>
+        <h1 id="radio-name">Carregando...</h1>
         <div id="now-playing">Conectando...</div>
         <audio id="player" controls autoplay></audio>
         <div id="status">Iniciando conexão...</div>
@@ -41,21 +41,19 @@
         const player = document.getElementById('player');
         const nowPlayingElem = document.getElementById('now-playing');
         const statusElem = document.getElementById('status');
+        const albumArtElem = document.getElementById('album-art');
+        const radioNameElem = document.getElementById('radio-name');
         const embedCodeElem = document.getElementById('embed-code');
         const copyButton = document.getElementById('copy-button');
 
-        // Gera o código do iframe com a URL completa
         const iframeSrc = window.location.origin + '/player_embed';
-        embedCodeElem.value = `<iframe src="${iframeSrc}" frameborder="0" allowtransparency="true" style="width:100%; min-height:150px; border:0;"></iframe>`;
-        
+        embedCodeElem.value = `<iframe src="${iframeSrc}" frameborder="0" allowtransparency="true" style="width:100%; min-height:150px; border:0; overflow:hidden;"></iframe>`;
         copyButton.addEventListener('click', () => {
-            embedCodeElem.select();
-            document.execCommand('copy');
+            embedCodeElem.select(); document.execCommand('copy');
             copyButton.textContent = 'Copiado!';
             setTimeout(() => { copyButton.textContent = 'Copiar Código'; }, 2000);
         });
 
-        // Lógica do Player (MSE)
         if ('MediaSource' in window) {
             const mediaSource = new MediaSource(); player.src = URL.createObjectURL(mediaSource);
             mediaSource.addEventListener('sourceopen', () => {
@@ -77,10 +75,19 @@
         } else { statusElem.textContent = "Seu navegador não suporta streaming contínuo."; player.src = '/stream'; }
         
         function updateNowPlaying() {
-            fetch('/now_playing').then(r => r.text()).then(name => {
-                let prettyName = name.replace(/\.mp3$/i, '').replace(/_/g, ' ');
+            fetch('/status').then(r => r.json()).then(data => {
+                //let prettyName = data.current_song_info_display ? data.current_song_info_display.replace(/_/g, ' ') : 'Carregando...';
+                let prettyName = data.current_song_info_display
+                ? data.current_song_info_display
+                    .replace(/_/g, ' ')
+                    .replace(/\.mp3$/i, '') // remove ".mp3" apenas se estiver no final
+                : 'Carregando...';                
                 nowPlayingElem.textContent = prettyName;
-                document.title = `${prettyName} - {{ radio_name }}`;
+                radioNameElem.textContent = data.radio_name;
+                document.title = `${prettyName} - ${data.radio_name}`;
+                if (albumArtElem.style.backgroundImage !== `url('${data.current_cover_url}')`) {
+                    albumArtElem.style.backgroundImage = `url('${data.current_cover_url}')`;
+                }
             });
         }
         setInterval(updateNowPlaying, 5000); updateNowPlaying();

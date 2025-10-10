@@ -23,7 +23,7 @@
 </head>
 <body>
     <div class="container mt-4 mb-5">
-        <div class="d-flex justify-content-between align-items-center mb-4">
+        <div class="d-flex justify-content-between align-items: center mb-4">
             <h1>Painel de Administração da Rádio</h1>
             <a href="/" class="btn btn-outline-secondary" target="_blank">Ver Página do Ouvinte</a>
         </div>
@@ -42,7 +42,7 @@
             <div class="card-body">
                 <p><strong>Status:</strong> <span id="status-is-playing">{% if status.is_playing %}<span class="badge bg-success fs-6">No Ar</span>{% else %}<span class="badge bg-danger fs-6">Parada</span>{% endif %}</span></p>
                 <p><strong>Ouvintes Online:</strong> <span id="status-listeners" class="badge bg-primary fs-6">{{ status.listeners }}</span></p>
-                <p><strong>Tocando Agora:</strong> <span id="status-current-song">{{ status.current_item.filename | prettify if status.current_item else 'N/A' }}</span></p>
+                <p><strong>Tocando Agora:</strong> <span id="status-current-song">{{ status.current_song_info_display | prettify }}</span></p>
                 <p><strong>Próxima Faixa:</strong> <span id="status-next-song">Carregando...</span></p>
                 <p><strong>Modo de Reprodução:</strong> <span id="status-playback-mode">{{ status.playback_mode.capitalize() }}</span></p>
             </div>
@@ -52,12 +52,44 @@
             <div class="col-lg-4">
                 <div class="card"><div class="card-header fw-bold">Controle da Transmissão</div><div class="card-body" id="playback-controls">{% if status.is_playing %}<p class="text-muted small">Pare a transmissão para poder remover a faixa que está tocando.</p><form action="/admin/playback" method="POST"><input type="hidden" name="action" value="stop"><button type="submit" class="btn btn-danger w-100">Parar Transmissão</button></form>{% else %}<p class="text-muted small">A transmissão está pausada.</p><form action="/admin/playback" method="POST"><input type="hidden" name="action" value="start"><button type="submit" class="btn btn-success w-100">Iniciar Transmissão</button></form>{% endif %}</div></div>
                 
-                <div class="card"><div class="card-header fw-bold">Conexão Ao Vivo (Radio Boss)</div><div class="card-body"><div id="live-status-indicator" class="d-none"><div class="live-indicator mb-3">AO VIVO</div></div><p class="card-text small">Use estas configurações no seu software de DJ (Icecast 2):</p><ul class="list-group list-group-flush small"><li class="list-group-item"><strong>Servidor:</strong> <code>{{ request.url.hostname }}</code></li><li class="list-group-item"><strong>Porta:</strong> <code>{{ request.url.port }}</code></li><li class="list-group-item"><strong>Mount Point:</strong> <code>/live</code></li><li class="list-group-item"><strong>Usuário:</strong> <code>{{ djuser }}</code></li><li class="list-group-item"><strong>Senha:</strong> <code>{{ djpass }}</code></li><li class="list-group-item"><strong>Formato:</strong> MP3, 128kbps, 44100Hz Estéreo</li></ul></div></div>
+                <div class="card">
+                    <div class="card-header fw-bold">Conexão Ao Vivo (Radio Boss)</div>
+                    <div class="card-body">
+                        <div id="live-status-indicator" class="d-none"><div class="live-indicator mb-3">AO VIVO</div></div>
+                        <p class="card-text small">Use estas configurações no seu software de DJ:</p>
+                        <ul class="list-group list-group-flush small mb-4">
+                            <li class="list-group-item"><strong>Servidor:</strong> <code>ip servidor</code></li>
+                            <li class="list-group-item"><strong>Porta:</strong> <code id="live-port-display">{{ port_live }}</code></li>
+                            <li class="list-group-item"><strong>Mount Point:</strong> <code>/live</code></li>
+                            <li class="list-group-item"><strong>Usuário:</strong> <code id="live-user-display">{{ status.live_user }}</code></li>
+                            <li class="list-group-item"><strong>Senha:</strong> <code>{{ status.live_password }}</code></li>
+                        </ul>
+                        <hr>
+                        <p class="card-text small fw-bold">Atualizar Credenciais Ao Vivo:</p>
+                        <form action="/admin/settings/live" method="POST">
+                            <div class="mb-3"><label for="live_user" class="form-label small">Usuário</label><input type="text" id="live_user" name="live_user" class="form-control form-control-sm" value="{{ status.live_user }}" required></div>
+                            <div class="mb-3"><label for="live_password" class="form-label small">Nova Senha</label><input type="password" id="live_password" name="live_password" class="form-control form-control-sm" placeholder="Deixe em branco para não alterar"></div>
+                            <button type="submit" class="btn btn-warning btn-sm w-100">Salvar Credenciais Ao Vivo</button>
+                        </form>
+                    </div>
+                </div>
                 
-                <div class="card"><div class="card-header fw-bold">Configurações Gerais</div><div class="card-body">
-                    <form action="/admin/settings/general" method="POST" class="mb-4"><div class="mb-3"><label for="radio_name" class="form-label">Nome da Rádio</label><input type="text" id="radio_name" name="radio_name" class="form-control" value="{{ status.radio_name }}" required></div><button type="submit" class="btn btn-primary">Salvar Nome</button></form><hr>
-                    <form action="/admin/settings/playback" method="POST"><div class="mb-3"><label class="form-label">Modo de Reprodução</label><select name="playback_mode" class="form-select"><option value="shuffle" {% if status.playback_mode == 'shuffle' %}selected{% endif %}>Aleatório</option><option value="sequential" {% if status.playback_mode == 'sequential' %}selected{% endif %}>Sequencial</option></select></div><div class="mb-3"><label class="form-label">Tocar vinheta a cada:</label><div class="input-group"><input type="number" name="jingle_interval" class="form-control" value="{{ status.jingle_interval }}" min="0"><span class="input-group-text">músicas</span></div><small class="form-text">(0 para desativar)</small></div><div class="mb-3"><label class="form-label">Tocar anúncio a cada:</label><div class="input-group"><input type="number" name="ad_interval" class="form-control" value="{{ status.ad_interval }}" min="0"><span class="input-group-text">músicas</span></div><small class="form-text">(0 para desativar)</small></div><button type="submit" class="btn btn-primary">Salvar Config. de Reprodução</button></form>
-                </div></div>
+                <div class="card">
+                    <div class="card-header fw-bold">Configurações Gerais</div>
+                    <div class="card-body">
+                        <form action="/admin/settings/general" method="POST" class="mb-4"><div class="mb-3"><label for="radio_name" class="form-label">Nome da Rádio</label><input type="text" id="radio_name" name="radio_name" class="form-control" value="{{ status.radio_name }}" required></div><button type="submit" class="btn btn-primary">Salvar Nome</button></form>
+                        <hr>
+                        <p class="card-text small fw-bold">Atualizar Credenciais do Painel:</p>
+                        <form action="/admin/settings/admin_credentials" method="POST" class="mb-4">
+                            <div class="mb-3"><label for="admin_user" class="form-label small">Usuário do Painel</label><input type="text" id="admin_user" name="admin_user" class="form-control form-control-sm" value="{{ status.admin_user }}" required></div>
+                            <div class="mb-3"><label for="admin_password" class="form-label small">Nova Senha do Painel</label><input type="password" id="admin_password" name="admin_password" class="form-control form-control-sm" placeholder="Deixe em branco para não alterar"></div>
+                            <button type="submit" class="btn btn-warning btn-sm w-100">Salvar Credenciais do Painel</button>
+                        </form>
+                        <hr>
+                        <p class="card-text small fw-bold">Configurações de Reprodução:</p>
+                        <form action="/admin/settings/playback" method="POST"><div class="mb-3"><label class="form-label">Modo de Reprodução</label><select name="playback_mode" class="form-select"><option value="shuffle" {% if status.playback_mode == 'shuffle' %}selected{% endif %}>Aleatório</option><option value="sequential" {% if status.playback_mode == 'sequential' %}selected{% endif %}>Sequencial</option></select></div><div class="mb-3"><label class="form-label">Tocar vinheta a cada:</label><div class="input-group"><input type="number" name="jingle_interval" class="form-control" value="{{ status.jingle_interval }}" min="0"><span class="input-group-text">músicas</span></div><small class="form-text">(0)</small></div><div class="mb-3"><label class="form-label">Tocar anúncio a cada:</label><div class="input-group"><input type="number" name="ad_interval" class="form-control" value="{{ status.ad_interval }}" min="0"><span class="input-group-text">músicas</span></div><small class="form-text">(0)</small></div><button type="submit" class="btn btn-primary">Salvar Config. de Reprodução</button></form>
+                    </div>
+                </div>
             </div>
             <div class="col-lg-8">
                 <div class="card"><div class="card-header fw-bold">Buscar e Baixar do YouTube</div><div class="card-body"><form id="search-form"><div class="input-group mb-3"><input type="text" id="search-query" class="form-control" placeholder="Nome da música ou artista..." required><button type="submit" class="btn btn-success">Buscar</button></div></form><div id="search-status" class="text-muted small"></div><ul id="search-results" class="list-group list-group-flush mt-3"></ul></div></div>
@@ -72,43 +104,33 @@
     <script src="https://cdn.jsdelivr.net/npm/sortablejs@latest/Sortable.min.js"></script>
     <script>
         document.addEventListener('DOMContentLoaded', function () {
-            // LÓGICA DO PLAYER (MSE)
+            // Lógica do Player (MSE)
             const player = document.getElementById('player');
-            if (player) {
-                const nowPlayingElem = document.getElementById('now-playing-monitor');
-                const statusElem = document.getElementById('status-monitor');
-                if ('MediaSource' in window) {
-                    const mediaSource = new MediaSource(); player.src = URL.createObjectURL(mediaSource);
-                    mediaSource.addEventListener('sourceopen', () => {
-                        statusElem.textContent = 'Conectado. Iniciando stream...';
-                        const sourceBuffer = mediaSource.addSourceBuffer('audio/mpeg');
-                        fetch('/stream').then(response => {
-                            const reader = response.body.getReader();
-                            function push() { reader.read().then(({ done, value }) => { if (done) return; const append = () => { if (value) try { sourceBuffer.appendBuffer(value); } catch(e) { console.error(e); } }; if (sourceBuffer.updating) { sourceBuffer.addEventListener('updateend', append, { once: true }); } else { append(); } push(); }).catch(err => console.error(err)); }
-                            push();
-                        });
-                    });
-                } else { statusElem.textContent = "Seu navegador não suporta streaming contínuo."; player.src = '/stream'; }
-                function updateNowPlaying() { fetch('/now_playing').then(r => r.text()).then(name => { nowPlayingElem.textContent = name.replace(/\.mp3$/i, '').replace(/_/g, ' '); }); }
-                setInterval(updateNowPlaying, 5000); updateNowPlaying();
-            }
+            if (player) { const nowPlayingElem = document.getElementById('now-playing-monitor'); const statusElem = document.getElementById('status-monitor'); if ('MediaSource' in window) { const mediaSource = new MediaSource(); player.src = URL.createObjectURL(mediaSource); mediaSource.addEventListener('sourceopen', () => { statusElem.textContent = 'Conectado. Iniciando stream...'; const sourceBuffer = mediaSource.addSourceBuffer('audio/mpeg'); fetch('/stream').then(response => { const reader = response.body.getReader(); function push() { reader.read().then(({ done, value }) => { if (done) return; const append = () => { if (value) try { sourceBuffer.appendBuffer(value); } catch(e) { console.error(e); } }; if (sourceBuffer.updating) { sourceBuffer.addEventListener('updateend', append, { once: true }); } else { append(); } push(); }).catch(err => console.error(err)); } push(); }); }); } else { statusElem.textContent = "Seu navegador não suporta streaming contínuo."; player.src = '/stream'; } function updateNowPlaying() { fetch('/now_playing').then(r => r.text()).then(name => { nowPlayingElem.textContent = name.replace(/\.mp3$/i, '').replace(/_/g, ' '); }); } setInterval(updateNowPlaying, 5000); updateNowPlaying(); }
 
-            // LÓGICA DE ORDENAÇÃO (SortableJS)
+            // Lógica de Ordenação (SortableJS)
             function initializeSortable(id) { const el = document.getElementById(id); if (!el) return; new Sortable(el, { animation: 150, handle: '.handle', ghostClass: 'sortable-ghost', onEnd: (evt) => { const type = evt.from.dataset.type, order = Array.from(evt.from.children).map(i => i.dataset.filename); fetch('/admin/reorder', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ type, order }) }); }}); }
             ['song-list', 'jingle-list', 'ad-list'].forEach(initializeSortable);
 
-            // LÓGICA DE ATUALIZAÇÃO EM TEMPO REAL DO PAINEL
-            const statusFields = { isPlaying: document.getElementById('status-is-playing'), listeners: document.getElementById('status-listeners'), currentSong: document.getElementById('status-current-song'), nextSong: document.getElementById('status-next-song'), playbackMode: document.getElementById('status-playback-mode'), playbackControls: document.getElementById('playback-controls'), liveIndicator: document.getElementById('live-status-indicator') };
+            // Lógica de Atualização em Tempo Real do Painel
+            const statusFields = { isPlaying: document.getElementById('status-is-playing'), listeners: document.getElementById('status-listeners'), currentSong: document.getElementById('status-current-song'), nextSong: document.getElementById('status-next-song'), playbackMode: document.getElementById('status-playback-mode'), playbackControls: document.getElementById('playback-controls'), liveIndicator: document.getElementById('live-status-indicator'), liveUserDisplay: document.getElementById('live-user-display'), livePortDisplay: document.getElementById('live-port-display') };
             if (statusFields.isPlaying) {
                 function prettifyJS(name) { return name ? name.replace(/\.mp3$/i, '').replace(/_/g, ' ') : 'N/A'; }
                 function updateAdminStatus() {
                     fetch('/admin/status').then(r => r.json()).then(data => {
                         statusFields.listeners.textContent = data.listeners;
-                        statusFields.currentSong.textContent = data.current_song_info_display ? prettifyJS(data.current_song_info_display) : (data.is_live ? "TRANSMISSÃO AO VIVO" : prettifyJS(data.current_item ? data.current_item.filename : null));
+                        statusFields.currentSong.textContent = data.current_song_info_display ? prettifyJS(data.current_song_info_display) : 'N/A';
                         statusFields.nextSong.textContent = data.is_live ? "---" : prettifyJS(data.next_item ? data.next_item.filename : null);
                         statusFields.playbackMode.textContent = data.playback_mode.charAt(0).toUpperCase() + data.playback_mode.slice(1);
                         if (data.is_playing) { statusFields.isPlaying.innerHTML = '<span class="badge bg-success fs-6">No Ar</span>'; statusFields.playbackControls.innerHTML = `<p class="text-muted small">Pare a transmissão para poder remover a faixa que está tocando.</p><form action="/admin/playback" method="POST"><input type="hidden" name="action" value="stop"><button type="submit" class="btn btn-danger w-100">Parar Transmissão</button></form>`; } else { statusFields.isPlaying.innerHTML = '<span class="badge bg-danger fs-6">Parada</span>'; statusFields.playbackControls.innerHTML = `<p class="text-muted small">A transmissão está pausada.</p><form action="/admin/playback" method="POST"><input type="hidden" name="action" value="start"><button type="submit" class="btn btn-success w-100">Iniciar Transmissão</button></form>`; }
                         if (data.is_live) { statusFields.liveIndicator.classList.remove('d-none'); } else { statusFields.liveIndicator.classList.add('d-none'); }
+                        
+                        if (statusFields.liveUserDisplay) { statusFields.liveUserDisplay.textContent = data.live_user; }
+                        if (statusFields.livePortDisplay) { 
+                            const mainPort = parseInt(window.location.port || (window.location.protocol === 'https:' ? '443' : '80'), 10);
+                            statusFields.livePortDisplay.textContent = mainPort; 
+                        }
+
                         document.querySelectorAll('.list-group-item.playing').forEach(el => el.classList.remove('playing'));
                         if (data.current_item && !data.is_live) {
                             const typeMap = {'song': 'songs', 'jingle': 'jingles', 'ad': 'ads'};
@@ -120,11 +142,10 @@
                         }
                     });
                 }
-                setInterval(updateAdminStatus, 3000);
-                updateAdminStatus();
+                setInterval(updateAdminStatus, 3000); updateAdminStatus();
             }
 
-            // LÓGICA DE BUSCA E DOWNLOAD DO YOUTUBE
+            // Lógica de Busca e Download do YouTube
             const searchForm = document.getElementById('search-form');
             if (searchForm) {
                 const searchQuery = document.getElementById('search-query');

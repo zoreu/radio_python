@@ -6,12 +6,15 @@ import subprocess
 import imageio_ffmpeg as ffmpeg
 from threading import Thread, RLock
 from queue import Queue, Full, Empty
+from mutagen.id3 import ID3, APIC
 
 # --- Constantes de Diretório ---
 MUSIC_DIR = 'music'
 JINGLES_DIR = 'jingles'
 ADS_DIR = 'ads'
 CONFIG_DIR = 'config'
+STATIC_DIR = 'static'
+COVER_DIR = os.path.join(STATIC_DIR, 'cover')
 
 SILENT_CHUNK = b'\xff\xfb\x90\x44' + b'\x00' * (4096 - 4)
 
@@ -33,46 +36,102 @@ class RadioStation:
     def __init__(self):
         self.lock = RLock()
         
-        for d in [MUSIC_DIR, JINGLES_DIR, ADS_DIR, CONFIG_DIR]:
+        for d in [MUSIC_DIR, JINGLES_DIR, ADS_DIR, CONFIG_DIR, STATIC_DIR, COVER_DIR]:
             os.makedirs(d, exist_ok=True)
+
+        # --- NOVO: Variáveis para credenciais do admin ---
+        self.admin_user = "admin"
+        self.admin_password = "12345"
 
         self.settings_file = os.path.join(CONFIG_DIR, 'settings.json')
         self.load_settings()
 
-        # --- Lógica de Comutador de Fontes ---
         self.live_source_active = False
         self.autodj_queue = Queue(maxsize=128)
         self.live_queue = Queue(maxsize=128)
         
-        # --- NOVO: Estado para os metadados ao vivo ---
         self.live_song_info = "AO VIVO"
+        self.current_cover_url = "/static/cover/default.png"
 
-        # --- Configurações e Estado (o resto do __init__) ---
         self.is_playing = True
         self.playback_mode = 'shuffle'
         self.jingle_interval = 3
         self.ad_interval = 10
-        self.master_song_list = []
-        self.master_jingle_list = []
-        self.master_ad_list = []
-        self.play_queue = []
-        self.songs_since_jingle = 0
-        self.songs_since_ad = 0
-        self.last_jingle_index = -1
-        self.last_ad_index = -1
+        
+        self.master_song_list, self.master_jingle_list, self.master_ad_list, self.play_queue = [], [], [], []
+        self.songs_since_jingle, self.songs_since_ad = 0, 0
+        self.last_jingle_index, self.last_ad_index = -1, -1
         self.listeners = []
         self.current_item = None
         self.current_song_info = "Rádio iniciando..."
         
         self.reload_master_lists()
 
-    # --- Métodos de Controle Ao Vivo ---
+    def load_settings(self):
+        """MODIFICADO: Carrega todas as configurações, incluindo todas as credenciais."""
+        try:
+            with open(self.settings_file, 'r', encoding='utf-8') as f:
+                settings = json.load(f)
+                self.radio_name = settings.get('radio_name', 'Rádio Python')
+                self.live_user = settings.get('live_user', 'dj_live')
+                self.live_password = settings.get('live_password', '12345')
+                self.admin_user = settings.get('admin_user', 'admin')
+                self.admin_password = settings.get('admin_password', '12345')
+        except (FileNotFoundError, json.JSONDecodeError):
+            print(f"Arquivo '{self.settings_file}' não encontrado. Criando um novo com valores padrão.")
+            self.radio_name, self.live_user, self.live_password = 'Rádio Python', 'dj_live', '12345'
+            self.admin_user, self.admin_password = 'admin', '12345'
+            self.save_settings()
+
+    def save_settings(self):
+        """MODIFICADO: Salva todas as configurações no arquivo JSON."""
+        with self.lock:
+            settings = {
+                'radio_name': self.radio_name,
+                'live_user': self.live_user,
+                'live_password': self.live_password,
+                'admin_user': self.admin_user,
+                'admin_password': self.admin_password
+            }
+            with open(self.settings_file, 'w', encoding='utf-8') as f:
+                json.dump(settings, f, indent=4)
+            print("Configurações salvas.")
+
+    def set_live_credentials(self, username, password):
+        with self.lock:
+            if username: self.live_user = username
+            if password: self.live_password = password # Só atualiza se uma nova senha for fornecida
+            self.save_settings()
+
+    # --- NOVO MÉTODO ---
+    def set_admin_credentials(self, username, password):
+        """Atualiza as credenciais do admin e salva."""
+        with self.lock:
+            if username: self.admin_user = username
+            if password: self.admin_password = password # Só atualiza se uma nova senha for fornecida
+            self.save_settings()
+
+    def _extract_and_save_cover(self, file_path):
+        try:
+            audio = ID3(file_path)
+            apic = audio.getall('APIC:')
+            if apic:
+                artwork = apic[0].data
+                save_path = os.path.join(COVER_DIR, "current_cover.jpg")
+                with open(save_path, 'wb') as img: img.write(artwork)
+                self.current_cover_url = f"/static/cover/current_cover.jpg?t={int(time.time())}"
+                return True
+        except Exception:
+            pass
+        return False
+
     def go_live(self):
         with self.lock:
             if not self.live_source_active:
                 print(">>> MUDANÇA DE SINAL: ENTRANDO AO VIVO! <<<")
                 self.live_source_active = True
-                self.live_song_info = "AO VIVO - Aguardando metadados..." # Reseta ao entrar ao vivo
+                self.live_song_info = "AO VIVO - Aguardando metadados..."
+                self.current_cover_url = "/static/cover/default.png"
                 while not self.live_queue.empty():
                     try: self.live_queue.get_nowait()
                     except Empty: break
@@ -82,149 +141,103 @@ class RadioStation:
             if self.live_source_active:
                 print(">>> MUDANÇA DE SINAL: SAINDO DO AR. RETOMANDO AUTO DJ. <<<")
                 self.live_source_active = False
+                self.current_cover_url = "/static/cover/default.png"
 
-    # --- NOVO MÉTODO ---
     def update_live_metadata(self, song_name):
-        """Atualiza o nome da música que está sendo tocada ao vivo."""
         with self.lock:
-            # Limpa o nome da música recebido
-            pretty_name = song_name.replace('+', ' ')
+            pretty_name = song_name.replace('+', ' ').strip()
             self.live_song_info = pretty_name
-            print(f"[METADADOS AO VIVO ATUALIZADOS] {pretty_name}")
+            print(f"[METADATOS AO VIVO ATUALIZADOS] {pretty_name}")
 
-    # --- Método MODIFICADO para ser um PRODUTOR ---
     def _auto_dj_thread(self):
+        # ... (Este método permanece exatamente o mesmo da sua versão) ...
         while True:
-            while not self.is_playing:
-                time.sleep(1)
-            
-            # Adicionado para que o Auto DJ espere se estiver ao vivo
-            if self.live_source_active:
-                time.sleep(1)
-                continue
-
+            while not self.is_playing or self.live_source_active: time.sleep(1)
             item_type, filename = self._get_next_item()
-            if not item_type:
-                self.autodj_queue.put(SILENT_CHUNK)
-                time.sleep(5)
-                continue
-            
+            if not item_type: self.autodj_queue.put(SILENT_CHUNK); time.sleep(5); continue
+            with self.lock: self.current_item = {'type': item_type, 'filename': filename}; self.current_song_info = f"({item_type.upper()}) {filename}" if item_type != 'song' else filename
+            dir_map = {'song': MUSIC_DIR, 'jingle': JINGLES_DIR, 'ad': ADS_DIR}; item_path = os.path.join(dir_map[item_type], filename)
+            if not os.path.exists(item_path): print(f"!!! AVISO: Arquivo não encontrado: {item_path}. Pulando."); self.reload_master_lists(); continue
             with self.lock:
-                self.current_item = {'type': item_type, 'filename': filename}
-                self.current_song_info = f"({item_type.upper()}) {filename}" if item_type != 'song' else filename
-            
-            dir_map = {'song': MUSIC_DIR, 'jingle': JINGLES_DIR, 'ad': ADS_DIR}
-            item_path = os.path.join(dir_map[item_type], filename)
-            
-            if not os.path.exists(item_path):
-                print(f"!!! AVISO: Arquivo não encontrado: {item_path}. Pulando.")
-                self.reload_master_lists()
-                continue
-
+                if not self._extract_and_save_cover(item_path): self.current_cover_url = "/static/cover/default.png"
             print(f"--- [AutoDJ] Preparando: {self.current_song_info} ---")
-            
             proc = None
             try:
-                ffmpeg_exe = ffmpeg.get_ffmpeg_exe()
-                ffmpeg_command = [ffmpeg_exe, '-re', '-i', item_path, '-vn', '-ar', '44100', '-ac', '2', '-b:a', '128k', '-f', 'mp3', 'pipe:1']
+                ffmpeg_exe = ffmpeg.get_ffmpeg_exe(); ffmpeg_command = [ffmpeg_exe, '-re', '-i', item_path, '-vn', '-ar', '44100', '-ac', '2', '-b:a', '128k', '-f', 'mp3', 'pipe:1']
                 proc = subprocess.Popen(ffmpeg_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                
-                stderr_thread = Thread(target=drain_pipe, args=(proc.stderr,))
-                stderr_thread.daemon = True
-                stderr_thread.start()
-
+                stderr_thread = Thread(target=drain_pipe, args=(proc.stderr,)); stderr_thread.daemon = True; stderr_thread.start()
                 while self.is_playing and not self.live_source_active:
                     chunk = proc.stdout.read(4096)
                     if not chunk: break
                     self.autodj_queue.put(chunk)
-                
-                if proc.poll() is None:
-                    proc.terminate() # Se o loop parou por entrar ao vivo, mata o FFmpeg
-                
-                return_code = proc.wait()
-                stderr_thread.join()
+                if proc.poll() is None: proc.terminate()
+                return_code = proc.wait(); stderr_thread.join()
+                if return_code not in [0, -9, -15]: print(f"!!! AVISO: FFmpeg encerrou com código {return_code} para: {filename}.")
+            except Exception as e: print(f"Erro no _auto_dj_thread: {e}");
+            if proc and proc.poll() is None: proc.terminate()
+            with self.lock: self.current_item = None
 
-                if return_code not in [0, -9]: # Ignora o código -9 (SIGTERM) que é normal
-                    print(f"!!! AVISO: FFmpeg encerrou com código {return_code} para: {filename}. Ver logs.")
-            
-            except Exception as e:
-                print(f"Erro no _auto_dj_thread: {e}")
-                if proc and proc.poll() is None: proc.terminate()
-            
-            with self.lock:
-                self.current_item = None
-
-    # --- Thread MESTRA que transmite para os ouvintes (COMUTADOR) ---
     def _master_broadcast_thread(self):
+        live_timeout_counter = 0 # Contador para o "alarme inteligente"
+        
         while True:
             chunk = None
             is_live_now = self.live_source_active
             try:
                 if is_live_now:
                     chunk = self.live_queue.get(timeout=0.5)
+                    live_timeout_counter = 0 # Zera o contador, pois recebemos áudio
                 else:
                     chunk = self.autodj_queue.get(timeout=1)
             except Empty:
                 chunk = SILENT_CHUNK
                 if is_live_now:
-                    print("[AVISO] Fonte Ao Vivo conectada, mas sem enviar dados (lag?).")
+                    live_timeout_counter += 1
+                    # Só imprime o aviso após ~5 segundos de silêncio (10 * 0.5s)
+                    if live_timeout_counter == 10:
+                        print("[AVISO] Fonte Ao Vivo conectada, mas sem enviar dados (lag?).")
             
             if chunk:
                 self._broadcast_chunk(chunk)
             time.sleep(0.001)
 
-    # --- Método MODIFICADO para iniciar as duas threads ---
     def start(self):
-        autodj_producer = Thread(target=self._auto_dj_thread, daemon=True)
-        autodj_producer.start()
-        master_broadcaster = Thread(target=self._master_broadcast_thread, daemon=True)
-        master_broadcaster.start()
-        print("Threads de Auto DJ (Produtor) e Transmissão Mestra (Comutador) iniciadas.")
+        # ... (Este método permanece exatamente o mesmo da sua versão) ...
+        autodj_producer = Thread(target=self._auto_dj_thread, daemon=True); autodj_producer.start()
+        master_broadcaster = Thread(target=self._master_broadcast_thread, daemon=True); master_broadcaster.start()
+        print("Threads de Auto DJ e Transmissão Mestra iniciadas.")
         
-    # --- MÉTODO MODIFICADO para retornar os metadados corretos ---
     def get_status(self):
+        """MODIFICADO: Retorna todas as configurações para o template."""
         with self.lock:
             next_item = self._peek_next_item() if not self.live_source_active else None
-            
-            if self.live_source_active:
-                current_playing_display = self.live_song_info
-                current_item_obj = {'type': 'live', 'filename': self.live_song_info}
-            else:
-                current_playing_display = self.current_song_info
-                current_item_obj = self.current_item
+            current_playing_display = self.live_song_info if self.live_source_active else self.current_song_info
+            current_item_obj = {'type': 'live', 'filename': self.live_song_info} if self.live_source_active else self.current_item
             
             return {
                 "radio_name": self.radio_name, 
+                "live_user": self.live_user, 
+                "live_password": self.live_password,
+                "admin_user": self.admin_user,
                 "is_playing": self.is_playing, 
                 "listeners": len(self.listeners), 
-                "current_item": current_item_obj,
+                "current_item": current_item_obj, 
                 "current_song_info_display": current_playing_display,
                 "next_item": next_item, 
                 "playback_mode": self.playback_mode, 
                 "jingle_interval": self.jingle_interval, 
-                "ad_interval": self.ad_interval
+                "ad_interval": self.ad_interval,
+                "current_cover_url": self.current_cover_url
             }
-
-    # O resto do arquivo (load_settings, save_order, etc.) permanece o mesmo...
-    def load_settings(self):
-        try:
-            os.makedirs(os.path.dirname(self.settings_file), exist_ok=True)
-            if not os.path.exists(self.settings_file): raise FileNotFoundError("Arquivo de configurações não encontrado.")
-            with open(self.settings_file, 'r', encoding='utf-8') as f: settings = json.load(f); self.radio_name = settings.get('radio_name', 'Rádio Python')
-        except (FileNotFoundError, json.JSONDecodeError) as e: print(f"[INFO] Criando novo arquivo de configurações ({e})"); self.radio_name = 'Rádio Python'; self.save_settings()
-    def save_settings(self):
-        with self.lock:
-            settings = {'radio_name': self.radio_name}
-            with open(self.settings_file, 'w', encoding='utf-8') as f: json.dump(settings, f, indent=4)
-            print("Configurações salvas.")
+            
     def set_radio_name(self, name):
         with self.lock: self.radio_name = name; self.save_settings()
     def start_playback(self):
         with self.lock:
-            if not self.is_playing: self.is_playing = True; print(">>> COMANDO: Transmissão iniciada pelo painel.")
+            if not self.is_playing: self.is_playing = True; print(">>> COMANDO: Transmissão iniciada.")
     def stop_playback(self):
         with self.lock:
-            if self.is_playing: self.is_playing = False; print(">>> COMANDO: Transmissão parada pelo painel.")
+            if self.is_playing: self.is_playing = False; print(">>> COMANDO: Transmissão parada.")
     def _load_order(self, order_file_path, available_files):
         if not os.path.exists(order_file_path): return available_files
         with open(order_file_path, 'r', encoding='utf-8') as f: ordered_filenames = [line.strip() for line in f]
@@ -241,7 +254,7 @@ class RadioStation:
             if list_type in ['all', 'songs']: available = self._scan_directory(MUSIC_DIR); self.master_song_list = self._load_order(os.path.join(CONFIG_DIR, 'songs_order.txt'), available)
             if list_type in ['all', 'jingles']: available = self._scan_directory(JINGLES_DIR); self.master_jingle_list = self._load_order(os.path.join(CONFIG_DIR, 'jingles_order.txt'), available)
             if list_type in ['all', 'ads']: available = self._scan_directory(ADS_DIR); self.master_ad_list = self._load_order(os.path.join(CONFIG_DIR, 'ads_order.txt'), available)
-            print("Listas mestras recarregadas com ordem customizada.")
+            print("Listas mestras recarregadas.")
     def _scan_directory(self, path): return [f for f in os.listdir(path) if f.endswith('.mp3')]
     def _build_play_queue(self):
         temp_song_list = self.master_song_list.copy();

@@ -6,3 +6,4 @@ imageio-ffmpeg
 yt-dlp
 requests
 werkzeug
+mutagen

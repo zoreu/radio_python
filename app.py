@@ -38,8 +38,6 @@ radio = RadioStation()
 # --- Autenticação NATIVA do FastAPI ---
 security = HTTPBasic()
 live_security = HTTPBasic(realm="Live Stream")
-# users = {"admin": "db17528"}
-# live_users = {"dj_live": "db17528"}
 
 def get_current_user(credentials: HTTPBasicCredentials = Depends(security)):
     """Verifica as credenciais do painel de administração."""

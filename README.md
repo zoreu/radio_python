@@ -1,6 +1,23 @@
 # radio_python
 Radio Web profissional em Python
 
+# caracteristicas
+
+auto dj
+
+capa da musica
+
+ao vivo
+
+ordenamento de musicas
+
+vinhetas
+
+anuncios (publicidade)
+
+pesquisar e baixar do youtube para a radio
+
+
 # requisitos
 
 python 3.11+

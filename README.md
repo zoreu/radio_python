@@ -32,8 +32,6 @@ painel admin:
 
 Exemplo: http://127.0.0.1:8080/admin
 
-login admin no app.py
-
 user: admin
 
 senha: 12345

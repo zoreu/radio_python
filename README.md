@@ -13,7 +13,7 @@ ordenamento de musicas
 
 vinhetas
 
-anuncios (publicidade)
+anuncios
 
 pesquisar e baixar do youtube para a radio
 
